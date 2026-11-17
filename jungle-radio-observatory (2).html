@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Karst Observatory: Live Feed</title>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef2e6;--ink:#123a2c;--acc:#b5560d;--red:#c0392b;--grn:#1f8f4e;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#040a0a;--ink:#9fe8c8;--acc:#ffd479;--red:#ff6a5a;--grn:#5dffa0}}
+:root[data-theme="dark"]{--bg:#040a0a;--ink:#9fe8c8;--acc:#ffd479;--red:#ff6a5a;--grn:#5dffa0}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font:13px/1.4 'Chakra Petch',system-ui,sans-serif}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+.p{position:fixed;pointer-events:none;text-shadow:0 0 8px var(--bg),0 0 3px var(--bg)}
+#hud{left:14px;top:calc(12px + env(safe-area-inset-top,0px))}
+#hud b{color:var(--acc);font-weight:600}
+#log{left:14px;bottom:calc(12px + env(safe-area-inset-bottom,0px));height:126px;overflow:hidden;font-size:12px;max-width:min(430px,60vw);display:flex;flex-direction:column;justify-content:flex-end}
+#log div:last-child{color:var(--acc)}
+#spec{position:fixed;left:14px;bottom:calc(150px + env(safe-area-inset-bottom,0px));width:min(300px,56vw);height:auto;pointer-events:none;border:1px solid var(--ink);opacity:.9}
+#tempo{left:14px;bottom:calc(244px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;gap:10px;font-size:12px}
+#tempo .tl{display:flex;flex-direction:column;gap:4px;padding:5px;border:1px solid var(--ink);border-radius:12px;background:color-mix(in srgb,var(--bg) 70%,transparent)}
+#tempo .lamp{width:14px;height:14px;border-radius:50%;border:1px solid var(--ink);opacity:.18;transition:opacity .15s}
+#tempo #lr{background:var(--red)}#tempo #lg{background:var(--grn)}
+#tempo #lr.on{box-shadow:0 0 10px var(--red)}#tempo #lg.on{box-shadow:0 0 10px var(--grn)}
+#tempo b{font-weight:600;font-size:15px}
+@media (max-width:640px){#tempo{bottom:calc(150px + env(safe-area-inset-bottom,0px));font-size:11px}}
+#chart{position:fixed;right:12px;top:calc(12px + env(safe-area-inset-top,0px));width:min(200px,34vw);height:auto;pointer-events:none}
+#pip{position:fixed;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));width:min(340px,46vw);aspect-ratio:16/10;border:1px solid var(--ink);pointer-events:none}
+#pip span{position:absolute;left:6px;top:4px;font-size:12px;text-shadow:0 0 6px var(--bg)}
+#pip svg{position:absolute;inset:0;width:100%;height:100%;color:var(--acc);opacity:.7}
+#gl{position:fixed;inset:0;pointer-events:none;opacity:0;background:repeating-linear-gradient(0deg,var(--ink) 0 1px,transparent 1px 5px)}
+#gl.on{animation:gl .4s ease-out}
+@keyframes gl{0%{opacity:.5}100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){#gl.on{animation:none}}
+@media (max-width:640px){#hud,#log{font-size:11px}#spec{display:none}}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Endless 3D line art view of a radio observatory in a jungle sinkhole"></canvas>
+<div id="gl"></div>
+<div id="hud" class="p"></div>
+<canvas id="spec" width="300" height="84"></canvas>
+<div id="tempo" class="p" aria-live="polite"><div class="tl"><i class="lamp" id="lr"></i><i class="lamp" id="lg"></i></div><div><b id="bp">--</b> BPM<br><span id="ts"></span></div></div>
+<div id="log" class="p"></div>
+<canvas id="chart" width="200" height="200"></canvas>
+<div id="pip"><span id="pl"></span><svg viewBox="0 0 100 100" preserveAspectRatio="none" fill="none" stroke="currentColor" stroke-width=".6" vector-effect="non-scaling-stroke"><path d="M50 40v20M40 50h20M8 8h8M8 8v8M92 8h-8M92 8v8M8 92h8M8 92v-8M92 92h-8M92 92v-8"/></svg></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),cs=getComputedStyle(document.documentElement),cvr=n=>cs.getPropertyValue(n).trim();
+const INKs=cvr('--ink'),ACCs=cvr('--acc'),INK=new THREE.Color(INKs),ACC=new THREE.Color(ACCs),BG=new THREE.Color(cvr('--bg'));
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),sm=x=>{x=clamp(x,0,1);return x*x*(3-2*x)},rr=(a,b)=>a+Math.random()*(b-a),pickA=a=>a[(Math.random()*a.length)|0],rnd=Math.random;
+const V=(x=0,y=0,z=0)=>new THREE.Vector3(x,y,z),PI=Math.PI;
+const ren=new THREE.WebGLRenderer({canvas:$('c'),antialias:true});ren.setClearColor(BG);ren.setPixelRatio(Math.min(devicePixelRatio,2));
+const sc=new THREE.Scene();sc.fog=new THREE.Fog(BG,90,320);
+const cam=new THREE.PerspectiveCamera(65,1,.5,700),tcam=new THREE.PerspectiveCamera(30,1.6,.5,700);
+const LM=(c,o,fog=true)=>new THREE.LineBasicMaterial({color:c,transparent:true,opacity:o,fog});
+const geo=a=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(a,3));return g};
+const SEG=(a,m)=>new THREE.LineSegments(geo(a),m);
+const Ln=(a,x1,y1,z1,x2,y2,z2)=>a.push(x1,y1,z1,x2,y2,z2);
+const ringA=(a,r,y,n=40,cx=0,cz=0)=>{for(let i=0;i<n;i++){const t=i/n*2*PI,u=(i+1)/n*2*PI;Ln(a,cx+Math.cos(t)*r,y,cz+Math.sin(t)*r,cx+Math.cos(u)*r,y,cz+Math.sin(u)*r);}};
+const box=(a,x,y,z,w,h,d)=>{const X=[x-w/2,x+w/2],Y=[y,y+h],Z=[z-d/2,z+d/2],p=(i,j,k)=>[X[i],Y[j],Z[k]];
+ [[0,0,0,1,0,0],[0,1,0,1,1,0],[0,0,1,1,0,1],[0,1,1,1,1,1],[0,0,0,0,1,0],[1,0,0,1,1,0],[0,0,1,0,1,1],[1,0,1,1,1,1],[0,0,0,0,0,1],[1,0,0,1,0,1],[0,1,0,0,1,1],[1,1,0,1,1,1]].forEach(e=>a.push(...p(e[0],e[1],e[2]),...p(e[3],e[4],e[5])));};
+// ================= SKY: ~45 constellations (RA hours, Dec degrees)
+const RAW=`Orion|5.92,7.4,5.68,-1.9,5.8,-9.7,5.24,-8.2,5.53,-.3,5.42,6.35,5.92,7.4;5.53,-.3,5.6,-1.2,5.68,-1.9
+Ursa Major|11.06,61.75,11.03,56.4,11.9,53.7,12.26,57,11.06,61.75;12.26,57,12.9,56,13.4,54.9,13.8,49.3
+Ursa Minor|2.53,89.3,17.5,86.6,16.77,82,15.73,77.8,16.29,75.7,15.35,71.8,14.85,74.2,15.73,77.8
+Cassiopeia|.15,59.15,.68,56.5,.95,60.7,1.43,60.2,1.9,63.7
+Cepheus|21.31,62.59,21.48,70.56,23.66,77.63,22.83,66.2,21.31,62.59
+Cygnus|20.69,45.28,20.37,40.26,19.51,27.96;19.75,45.13,20.37,40.26,20.77,33.97
+Lyra|18.62,38.78,18.74,37.6,18.91,36.9,18.98,32.69,18.83,33.36,18.74,37.6
+Aquila|19.77,10.6,19.85,8.87,19.92,6.4;19.85,8.87,19.09,13.86;19.85,8.87,20.19,-.8
+Scorpius|16.09,-19.8,16,-22.6,16.49,-26.43,16.84,-34.3,16.86,-38,16.9,-42.4,17.62,-43,17.7,-39,17.56,-37.1
+Sagittarius|18.1,-30.4,18.35,-29.8,18.47,-25.4,18.76,-27,18.92,-26.3,19.04,-29.9,18.4,-34.4,18.1,-30.4
+Leo|10.14,11.97,10.12,16.76,10.33,19.84,11.24,20.5,11.82,14.57,11.24,15.4,10.14,11.97
+Virgo|11.84,1.76,12.69,-1.45,13.58,-.6,13.42,-11.16;12.69,-1.45,13.04,10.96
+Bootes|13.91,18.4,14.26,19.18,14.75,27.07,15.03,40.4,14.53,38.3,14.75,27.07
+Corona Borealis|15.46,29.1,15.58,26.7,15.71,26.3,15.96,26.9,16.15,29.9
+Hercules|16.69,31.6,16.71,38.9,17.25,36.8,17,30.9,16.69,31.6;17,30.9,17.25,24.8,17.24,14.39;16.69,31.6,16.5,21.5
+Gemini|7.58,31.9,6.73,25.1,6.38,22.5;7.76,28.03,7.34,21.98,6.63,16.4
+Taurus|5.44,28.6,4.6,16.5,4.33,15.6,4.01,12.5;4.6,16.5,4.48,19.18;4.6,16.5,5.63,21.14
+Canis Major|6.38,-18,6.75,-16.7,7.14,-26.4,6.98,-28.97;7.14,-26.4,7.4,-29.3
+Canis Minor|7.45,8.3,7.65,5.2
+Auriga|5.28,46,6,44.95,5.99,37.2,5.44,28.6,4.95,33.17,5.28,46
+Perseus|3.08,53.5,3.4,49.86,3.72,47.8,3.96,40,3.9,31.9;3.4,49.86,3.14,40.96
+Andromeda|.14,29.1,.66,30.9,1.16,35.6,2.07,42.3
+Pegasus|23.08,15.2,23.06,28.1,.14,29.1,.22,15.2,23.08,15.2;23.08,15.2,21.74,9.88
+Aries|1.89,19.3,1.91,20.8,2.12,23.5
+Triangulum|1.88,29.58,2.29,33.85,2.16,34.99,1.88,29.58
+Crux|12.44,-63.1,12.52,-57.1;12.8,-59.7,12.25,-58.7
+Centaurus|12.69,-48.96,13.66,-53.5,14.06,-60.4,14.66,-60.8;13.66,-53.5,13.93,-47.3,14.11,-36.4
+Carina|6.4,-52.7,8.38,-59.5,9.28,-59.3,9.22,-69.7
+Vela|8.16,-47.3,9.13,-43.4,9.37,-55,8.75,-54.7,8.16,-47.3
+Eridanus|1.63,-57.2,2.28,-51.5,2.97,-40.3,3.23,-21.8,3.55,-9.5,4.2,-6,5.13,-5.1
+Lepus|5.22,-16.2,5.55,-17.8,5.47,-20.76,5.08,-22.4,5.22,-16.2
+Aquarius|21.53,-5.57,22.1,-.32,22.48,-.02,22.91,-15.8
+Capricornus|20.3,-12.5,20.35,-14.8,21.67,-16.66,21.78,-16.1,20.3,-12.5
+Ophiuchus|17.58,12.56,17.72,4.57,17.17,-15.7,16.62,-10.6,16.24,-3.7,17.72,4.57
+Libra|14.85,-16.04,15.28,-9.38,15.6,-14.8,14.85,-16.04
+Draco|14.07,64.38,15.41,58.97,17.5,55.2,17.51,52.3,17.94,51.49,17.89,56.87,17.51,52.3;17.89,56.87,19.21,67.66
+Corvus|12.26,-17.54,12.5,-16.5,12.57,-23.4,12.17,-22.6,12.26,-17.54
+Delphinus|20.66,15.9,20.78,16.1,20.72,15.07,20.63,14.6,20.66,15.9;20.63,14.6,20.55,11.3
+Cetus|3.04,4.09,2.72,3.24,2.32,-2.98,.73,-17.99
+Cancer|8.28,9.19,8.72,18.15,8.72,21.47;8.72,18.15,8.97,11.86
+Hydra|8.62,5.7,8.78,3.4,9.24,2.3,9.46,-8.66,10.83,-16.2,11.9,-31,13.3,-23.2,14.1,-26.7
+Canes Venatici|12.93,38.3,12.56,41.36
+Triangulum Australe|16.81,-69,15.92,-63.4,15.32,-68.7,16.81,-69
+Grus|21.9,-37.4,22.14,-46.9,22.71,-46.9
+Tucana|22.31,-60.26,23.29,-58.2,.52,-62.96`;
+const E3=(h,d)=>{const a=h*PI/12,b=d*PI/180;return V(Math.cos(b)*Math.cos(a),Math.cos(b)*Math.sin(a),Math.sin(b));};
+const CAT=[],STARS=[];
+RAW.split('\n').forEach(l=>{const[n,p]=l.split('|'),polys=p.split(';').map(s=>{const a=s.split(',').map(Number),o=[];for(let i=0;i<a.length;i+=2)o.push(E3(a[i],a[i+1]));return o;});
+ const c=V(),all=[];polys.forEach(pl=>pl.forEach(v=>{all.push(v);c.add(v);STARS.push({ci:CAT.length,E:v});}));c.normalize();
+ let rad=0;all.forEach(v=>rad=Math.max(rad,Math.acos(clamp(v.dot(c),-1,1))));CAT.push({n,polys,c,rad});});
+const SK=300,sky=new THREE.Group();sky.matrixAutoUpdate=false;sc.add(sky);
+const cMat=[],cLab=[],cp=[];
+const labTex=t=>{const c=document.createElement('canvas');c.width=256;c.height=48;const g=c.getContext('2d');g.font='600 30px Georgia,serif';g.textAlign='center';g.fillStyle='#fff';g.fillText(t,128,34);return new THREE.CanvasTexture(c);};
+CAT.forEach(k=>{const a=[];k.polys.forEach(pl=>{for(let i=0;i<pl.length-1;i++)a.push(pl[i].x*SK,pl[i].y*SK,pl[i].z*SK,pl[i+1].x*SK,pl[i+1].y*SK,pl[i+1].z*SK);pl.forEach(v=>cp.push(v.x*SK,v.y*SK,v.z*SK));});
+ const m=LM(INK,.3,false);cMat.push(m);sky.add(SEG(a,m));
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:labTex(k.n),color:INK,transparent:true,depthTest:false,opacity:.3,fog:false}));s.scale.set(44,8.2,1);s.position.copy(k.c).multiplyScalar(SK*.99);sky.add(s);cLab.push(s);});
+sky.add(new THREE.Points(geo(cp),new THREE.PointsMaterial({color:INK,size:4.5,sizeAttenuation:false,fog:false})));
+{const b=[];for(let i=0;i<1500;i++){const z=rr(-1,1),t=rr(0,2*PI),q=Math.sqrt(1-z*z);b.push(q*Math.cos(t)*SK,q*Math.sin(t)*SK,z*SK);}
+ sky.add(new THREE.Points(geo(b),new THREE.PointsMaterial({color:INK,size:1.6,sizeAttenuation:false,fog:false,transparent:true,opacity:.8})));
+ const M=[[-.0548755604,-.8734370902,-.4838350155],[.4941094279,-.44482963,.7469822445],[-.867666149,-.1980763734,.4559837762]],mw=[];
+ while(mw.length<9000){const l=rr(0,2*PI);if(rnd()>.3+.7*(.5+.5*Math.cos(l)))continue;const bb=(rnd()+rnd()+rnd()-1.5)*(.2+.12*Math.cos(l)),gx=Math.cos(bb)*Math.cos(l),gy=Math.cos(bb)*Math.sin(l),gz=Math.sin(bb);
+  mw.push((M[0][0]*gx+M[1][0]*gy+M[2][0]*gz)*SK,(M[0][1]*gx+M[1][1]*gy+M[2][1]*gz)*SK,(M[0][2]*gx+M[1][2]*gy+M[2][2]*gz)*SK);}
+ sky.add(new THREE.Points(geo(mw),new THREE.PointsMaterial({color:INK,size:1.2,sizeAttenuation:false,fog:false,transparent:true,opacity:.35})));}
+const LAT=18.34*PI/180,SPEED=300,th0=rnd()*2*PI,_v=V(),tw=v=>_v.copy(v).applyMatrix4(sky.matrix);
+function setSky(T){const th=th0+T*SPEED*7.2921e-5,sT=Math.sin(th),cT=Math.cos(th),sP=Math.sin(LAT),cP=Math.cos(LAT);
+ sky.matrix.set(-sT,cT,0,0,cP*cT,cP*sT,sP,0,sP*cT,sP*sT,-cP,0,0,0,0,1);sky.matrixWorldNeedsUpdate=true;return th;}
+const mark=new THREE.Points(geo([0,0,0]),new THREE.PointsMaterial({color:ACC,size:16,sizeAttenuation:false,fog:false,depthTest:false}));sky.add(mark);
+// ================= GROUND: karst sinkhole, dish, platform, towers
+const R=50,RC=88,DEP=RC-Math.sqrt(RC*RC-R*R),PY=36,CY=DEP*0+RC-DEP;
+const dY=r=>RC-Math.sqrt(RC*RC-r*r)-DEP;
+const Hh=(x,z)=>{const r=Math.hypot(x,z);if(r<R)return dY(r);const k=sm((r-R-12)/45);return 1.4*Math.exp(-(((r-R)/3)**2))+k*(24*Math.pow(Math.abs(Math.sin(x*.045+.5)*Math.cos(z*.04+1)),.7)+9*Math.abs(Math.sin(x*.13)*Math.sin(z*.11)));};
+{const t=[],n=61,s=5,h=[];for(let i=0;i<n;i++){h.push([]);for(let j=0;j<n;j++)h[i].push(Hh((i-30)*s,(j-30)*s));}
+ for(let i=0;i<n;i++)for(let j=0;j<n;j++){const x=(i-30)*s,z=(j-30)*s;if(Math.hypot(x,z)<R-3)continue;
+  if(i<n-1&&Math.hypot(x+s,z)>=R-3)Ln(t,x,h[i][j],z,x+s,h[i+1][j],z);if(j<n-1&&Math.hypot(x,z+s)>=R-3)Ln(t,x,h[i][j],z,x,h[i][j+1],z+s);}
+ sc.add(SEG(t,LM(INK,.42)));
+ const d=[];for(let r=5;r<=R;r+=5)ringA(d,r,dY(r)+.02,Math.max(24,r*1.6|0));for(let i=0;i<44;i++){const a=i/44*2*PI;for(let r=2;r<R;r+=5)Ln(d,Math.cos(a)*r,dY(r),Math.sin(a)*r,Math.cos(a)*(r+5),dY(r+5),Math.sin(a)*(r+5));}
+ sc.add(SEG(d,LM(INK,.8)));
+ const rd=[];ringA(rd,R+8,.2,90);ringA(rd,R+13,.2,90);sc.add(SEG(rd,LM(ACC,.5)));
+ const tL=[],tF=[]; // tL: outline segments, tF: solid fill triangles
+ const tN=(x,z)=>Math.sin(x*.05+1)*Math.cos(z*.045)+.5*Math.sin((x+z)*.09);
+ const keep=[[30,66],[150,66],[270,66]].map(([d,r])=>[d*PI/180,r]);
+ const pts=[[.4,R+24],[2.4,R+22],[4.3,R+22],[1.2,R+17],[3.1,R+17],[5,R+17]];
+ const blocked=(x,z)=>{const r=Math.hypot(x,z),a=Math.atan2(z,x);
+  for(const[p,q]of pts)if(Math.hypot(x-Math.cos(p)*q,z-Math.sin(p)*q)<13)return true;
+  for(const[p]of keep){const d=Math.abs(((a-p+3*PI)%(2*PI))-PI);if(d<.13&&r<110)return true;}return false;};
+ const SIDES=10;
+ // one solid cone tier: filled sides and base, plus outline rings and ribs
+ const cone=(x,z,yb,yt,rad,rot)=>{const P=[];for(let m=0;m<SIDES;m++){const t=rot+m/SIDES*2*PI;P.push([x+Math.cos(t)*rad,z+Math.sin(t)*rad]);}
+  for(let m=0;m<SIDES;m++){const a=P[m],b=P[(m+1)%SIDES];
+   tF.push(x,yt,z,a[0],yb,a[1],b[0],yb,b[1]);tF.push(x,yb,z,b[0],yb,b[1],a[0],yb,a[1]);
+   Ln(tL,a[0],yb,a[1],b[0],yb,b[1]);if(m%2===0)Ln(tL,x,yt,z,a[0],yb,a[1]);}};
+ // orderly belts of firs: taller toward the outer belts, with clearings from a smooth noise field
+ for(let r=R+18;r<150;r+=7){const n=Math.floor(2*PI*r/8.5),off=rr(0,2*PI);
+  for(let k=0;k<n;k++){const a=off+(k+rr(-.25,.25))/n*2*PI,rj=r+rr(-1.6,1.6),x=Math.cos(a)*rj,z=Math.sin(a)*rj,nz=tN(x,z);
+   if(nz>.95||blocked(x,z))continue;
+   const y=Hh(x,z),q=clamp((rj-R)/100+.25*nz,0,1),hh=rr(9,13)+q*9,tiers=hh>15?5:4,rot=rr(0,2*PI);
+   Ln(tL,x,y,z,x,y+hh*.2,z);
+   for(let t=0;t<tiers;t++){const f=t/tiers,yb=y+hh*(.14+.62*f),yt=yb+hh*(.3+.12*(1-f)),rad=hh*.3*(1-.78*f);cone(x,z,yb,yt,rad,rot+t*.3);}}}
+ const fillC=BG.clone().lerp(INK,.14);
+ const fg=geo(tF);
+ const fm=new THREE.Mesh(fg,new THREE.MeshBasicMaterial({color:fillC,side:THREE.DoubleSide,fog:true,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}));
+ sc.add(fm);sc.add(SEG(tL,LM(INK,.9)));}
+const pva=[90,210,330].map(d=>d*PI/180),pv=pva.map(a=>[Math.cos(a)*20,Math.sin(a)*20]),st=[],cb=[],bd=[];
+for(let i=0;i<3;i++){const A=pv[i],B=pv[(i+1)%3];Ln(st,A[0],PY,A[1],B[0],PY,B[1]);Ln(st,A[0],PY-3,A[1],B[0],PY-3,B[1]);Ln(st,A[0],PY,A[1],A[0],PY-3,A[1]);
+ for(let k=0;k<8;k++){const f=k/8,g=(k+1)/8,p1=[A[0]+(B[0]-A[0])*f,A[1]+(B[1]-A[1])*f],p2=[A[0]+(B[0]-A[0])*g,A[1]+(B[1]-A[1])*g];Ln(st,p1[0],k%2?PY:PY-3,p1[1],p2[0],k%2?PY-3:PY,p2[1]);}
+ Ln(st,A[0],PY,A[1],0,PY,0);}
+ringA(st,6,PY-3,24);
+const tmid=pva.map((a,i)=>a+PI/3),TP=[];
+tmid.forEach((a,i)=>{const x=Math.cos(a)*66,z=Math.sin(a)*66,y0=Hh(x,z),top=50;TP.push(V(x,top,z));
+ for(let l=0;l<=6;l++){const yy=y0+(top-y0)*l/6,hw=5-3.6*l/6,hw2=5-3.6*(l+1)/6,yy2=y0+(top-y0)*(l+1)/6;
+  [[1,1],[1,-1],[-1,-1],[-1,1]].forEach((c,k)=>{const n=[[-1,1],[1,1],[1,-1],[-1,-1]][k],c2=[c[0]*1,c[1]*1];Ln(bd,x+c[0]*hw,yy,z+c[1]*hw,x+n[0]*hw,yy,z+n[1]*hw);if(l<6){Ln(bd,x+c[0]*hw,yy,z+c[1]*hw,x+c[0]*hw2,yy2,z+c[1]*hw2);Ln(bd,x+c[0]*hw,yy,z+c[1]*hw,x+n[0]*hw2,yy2,z+n[1]*hw2);}});}
+ for(const j of [i,(i+1)%3])[PY,PY-3].forEach(yy=>Ln(cb,x,top,z,pv[j][0],yy,pv[j][1]));
+ [-8,8].forEach(o=>{const ax=x*1.55-Math.sin(a)*o,az=z*1.55+Math.cos(a)*o;Ln(cb,x,top,z,ax,Hh(ax,az),az);});});
+sc.add(SEG(st,LM(INK,.95)));sc.add(SEG(bd,LM(INK,.8)));sc.add(SEG(cb,LM(ACC,.55)));
+// azimuth arm + Gregorian dome
+const arm=new THREE.Group(),ar=[],RA=44,CYc=72.4;sc.add(arm);
+for(let d=-22;d<=22;d+=2){const p=d*PI/180,x=RA*Math.sin(p),y=CYc-RA*Math.cos(p),q=(d+2)*PI/180;[-1.4,1.4].forEach(z=>{if(d<22)Ln(ar,x,y,z,RA*Math.sin(q),CYc-RA*Math.cos(q),z);});Ln(ar,x,y,-1.4,x,y,1.4);}
+[-1,1].forEach(s=>{const x=s*RA*Math.sin(22*PI/180),y=CYc-RA*Math.cos(22*PI/180);Ln(ar,x,y,-1.4,s*3,PY-3,0);Ln(ar,x,y,1.4,s*3,PY-3,0);});
+arm.add(SEG(ar,LM(ACC,.9)));
+const dome=new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(3.4,12,6,0,2*PI,PI/2,PI/2)),LM(ACC,1));sc.add(dome);
+// buildings and small tracking dishes
+{const b=[];box(b,Math.cos(.4)*(R+24)-7,Hh(Math.cos(.4)*(R+24),Math.sin(.4)*(R+24)),Math.sin(.4)*(R+24),14,6,10);box(b,Math.cos(2.4)*(R+22),Hh(Math.cos(2.4)*(R+22),Math.sin(2.4)*(R+22)),Math.sin(2.4)*(R+22),10,4,16);box(b,Math.cos(4.3)*(R+22),Hh(Math.cos(4.3)*(R+22),Math.sin(4.3)*(R+22)),Math.sin(4.3)*(R+22),8,5,8);sc.add(SEG(b,LM(INK,.9)));}
+const lp=[];for(let i=0;i<=8;i++){const x=i/8*3;lp.push(new THREE.Vector2(x,x*x*.2));}
+const gd=[1.2,3.1,5.0].map(a=>{const g=new THREE.Group(),r=R+17;g.position.set(Math.cos(a)*r,Hh(Math.cos(a)*r,Math.sin(a)*r),Math.sin(a)*r);g.add(SEG([0,0,0,0,3.5,0],LM(INK,.9)));
+ const p=new THREE.Group();p.position.y=3.5;const d=new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.LatheGeometry(lp,12)),LM(INK,.9));p.add(d);g.add(p);sc.add(g);return{p,q:new THREE.Quaternion(),t:0};});
+// ================= LIFE: staff, trucks, drones, birds
+const mS=LM(INK,.95);
+function human(){const g=new THREE.Group(),L=a=>SEG(a,mS);const hd=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(.3,1),1),mS);hd.position.y=1.8;g.add(hd);
+ g.add(L([0,1.5,0,0,1,0,-.32,1.45,0,.32,1.45,0,-.32,1.45,0,-.4,.55,0,.32,1.45,0,.4,.55,0,-.4,.55,0,.4,.55,0]));
+ g.legs=[-1,1].map(s=>{const p=new THREE.Group();p.position.set(s*.13,1,0);p.add(L([0,0,0,0,-.5,0,0,-.5,0,0,-1,.1]));g.add(p);return p;});
+ g.arms=[-1,1].map(s=>{const p=new THREE.Group();p.position.set(s*.32,1.45,0);p.add(L([0,0,0,0,-.4,0,0,-.4,0,0,-.7,.12]));g.add(p);return p;});return g;}
+const staff=[];
+for(let i=0;i<9;i++){const plat=i<2,g=human();sc.add(g);staff.push({g,p:V(),dir:V(0,0,1),a:rr(0,2*PI),w:(rnd()<.5?-1:1)*rr(.012,.03),off:rr(-2,2),pause:0,ph:rr(0,6),plat,e:(rnd()*3)|0,f:rnd(),sp:rr(.04,.08)});}
+const trucks=[0,1,2].map(i=>{const g=new THREE.Group(),a=[];box(a,0,.6,0,4.4,1.5,1.9);box(a,2.6,.6,0,1.6,1.1,1.8);ringA(a,.55,0,10);g.add(SEG(a,mS));
+ [[-1.3,1],[1.3,1],[-1.3,-1],[1.3,-1]].forEach(([x,z])=>{const w=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.CylinderGeometry(.55,.55,.3,10),30),mS);w.rotation.x=PI/2;w.position.set(x,.55,z);g.add(w);});sc.add(g);
+ return{g,p:V(),dir:V(1,0,0),a:rr(0,2*PI),w:(rnd()<.5?-1:1)*rr(.07,.14),off:i*1.6-1.2,pause:0};});
+const drones=[0,1,2].map(i=>{const g=new THREE.Group(),a=[];Ln(a,-1.2,0,-1.2,1.2,0,1.2);Ln(a,-1.2,0,1.2,1.2,0,-1.2);box(a,0,-.2,0,.8,.4,.8);g.add(SEG(a,LM(ACC,1)));
+ g.rot=[[-1.2,-1.2],[1.2,1.2],[-1.2,1.2],[1.2,-1.2]].map(([x,z])=>{const r=SEG((()=>{const q=[];ringA(q,.7,0,8);return q})(),LM(ACC,1));r.position.set(x,.15,z);g.add(r);return r;});g.scale.setScalar(1.6);sc.add(g);
+ return{g,p:V(),a:rr(0,2*PI),r:rr(30,100),h:rr(14,60),w:rr(.05,.12)*(rnd()<.5?-1:1),tr:60,th:30,tw:.08,t:rr(0,5)};});
+const wingA=geo([0,0,0,-1.5,.2,-.5]),wingB=geo([0,0,0,1.5,.2,-.5]);
+const flocks=[0,1,2].map(i=>{const bs=[];for(let k=0;k<9;k++){const g=new THREE.Group(),l=new THREE.Line(wingA,LM(INK,.9)),r=new THREE.Line(wingB,LM(INK,.9));g.add(l,r);g.l=l;g.r=r;g.o=V(rr(-6,6),rr(-3,3),rr(-6,6));g.ph=rr(0,6);sc.add(g);bs.push(g);}
+ return{bs,a:rr(0,6),r:rr(40,110),h:rr(25,60),w:rr(.04,.1)*(rnd()<.5?-1:1),tr:70,th:40,t:0};});
+// ================= WEATHER, METEORS, SATELLITES
+const RN=1200,rainG=geo((()=>{const a=[];for(let i=0;i<RN;i++){const x=rr(-40,40),y=rr(-25,25),z=rr(-40,40);Ln(a,x,y,z,x-.3,y-2.2,z);}return a;})()),rain=new THREE.LineSegments(rainG,LM(INK,.5,false));rain.frustumCulled=false;sc.add(rain);
+const bolt=new THREE.Line(geo(new Array(45).fill(0)),LM(ACC,1,false));bolt.visible=false;bolt.frustumCulled=false;sc.add(bolt);
+const mets=[0,1,2].map(()=>{const l=new THREE.Line(geo([0,0,0,0,0,0]),LM(ACC,1,false));l.visible=false;l.frustumCulled=false;sc.add(l);return{l,t:9,P:V(),D:V(),d:1};});
+const satP=new THREE.Points(geo([0,0,0]),new THREE.PointsMaterial({color:ACC,size:5,sizeAttenuation:false,fog:false}));satP.visible=false;sc.add(satP);
+const sat={a:V(),b:V(),f:-9,s:.05,wait:6};
+let wx={s:'clear',end:20},fogN=90,fogF=320,rainAmt=0,tgtRain=0,flash=0,boltT=0,nextBolt=5;
+// ================= STATE
+let bpm=90,bpmBase=90,beatPh=0,lampState='';const BPM_LIMIT=105;let T=0,th=0,radio=null,radioEnd=0,raz=0,rpsi=.1,locked=false,oc=0,ocEnd=0,tl=V(0,1,0),nextEv=2,shot=null,shotEnd=0,lastShot=-1;
+const logs=[],domeP=V(),dirW=V(0,1,0),look=V(0,20,0),clk=new THREE.Clock();
+const EV=[()=>`pulsar B${1900+((rnd()*60)|0)}+${(rnd()*60)|0} locked, P=${rr(.0015,1.9).toFixed(4)} s`,()=>`HI line ${rr(1420.2,1420.6).toFixed(3)} MHz, S/N ${rr(6,31).toFixed(1)}`,()=>`FRB candidate, DM ${(rr(100,1500))|0} pc/cm³`,
+ ()=>`RFI burst flagged near ${(rr(1100,1700))|0} MHz`,()=>`narrowband hit dismissed, drift ${rr(-4,4).toFixed(2)} Hz/s`,()=>`${pickA(['Cas A','Cyg A','Tau A','3C 273','Vir A'])} calibration, gain ${rr(7,11).toFixed(2)} K/Jy`,
+ ()=>`drone D${((rnd()*3)|0)+1} battery ${(rr(20,95))|0}%`,()=>`shift change, ${((rnd()*6)|0)+2} staff on site`,()=>`cable tension ${rr(.97,1.03).toFixed(3)} of nominal`,()=>`${pickA(['parrot flock','owl','bat colony','coqui chorus'])} noted by perimeter camera`];
+const log=s=>{logs.push(s);if(logs.length>7)logs.shift();const L=$('log');L.innerHTML=logs.map(()=>'<div></div>').join('');[...L.children].forEach((d,i)=>d.textContent=logs[i]);};
+function pickRadio(){const c=STARS.filter(s=>tw(s.E).y>.945);let b=pickA(c.length?c:STARS);if(!c.length){let m=-1;STARS.forEach(s=>{const y=tw(s.E).y;if(y>m){m=y;b=s;}});}radio=b;radioEnd=T+rr(25,65);bpmBase=rr(70,150);mark.position.copy(b.E).multiplyScalar(SK);log(`dish slewing to a star in ${CAT[b.ci].n}`);}
+function pickOpt(){let i=0;for(let k=0;k<20;k++){i=(rnd()*CAT.length)|0;if(i!==oc&&tw(CAT[i].c).y>.3)break;}oc=i;ocEnd=T+rr(14,32);log(`optical scope: ${CAT[i].n}, field ${(CAT[i].rad*2.5*180/PI).toFixed(0)}°`);}
+// ================= CAMERA DIRECTOR
+const spots=[];TP.forEach((p,i)=>spots.push({n:'CCTV TOWER '+(i+1),p:p.clone().add(V(0,2,0)),t:()=>V(0,PY,0)}));
+[.7,2.0,3.6,5.2].forEach((a,i)=>spots.push({n:'CCTV RIM POLE '+(i+1),p:V(Math.cos(a)*(R+9),7,Math.sin(a)*(R+9)),t:()=>V(0,-4,0)}));
+const wp=(x,y,z)=>{const c=Math.cos(raz),s=Math.sin(raz);return V(x*c+z*s,y,-x*s+z*c);};
+const DIR=[
+ ()=>{const d=pickA(drones),tg=pickA([()=>V(0,PY-2,0),()=>domeP,()=>V(0,-6,0)]),i=drones.indexOf(d);look.copy(tg());return{n:'DRONE D'+(i+1),dur:rr(12,22),fov:72,u(dt){cam.position.copy(d.p);look.lerp(tg(),Math.min(1,dt*1.2));cam.lookAt(look);}};},
+ ()=>{const s=pickA(spots),ph=rr(0,6);return{n:s.n,dur:rr(8,15),fov:55,u(){cam.position.copy(s.p);const t=s.t();t.x+=Math.sin(T*.25+ph)*12;t.z+=Math.cos(T*.2+ph)*12;look.lerp(t,.08);cam.lookAt(look);}};},
+ ()=>{const e=pickA([...staff,...trucks]);return{n:e.w!==undefined&&e.sp===undefined?'VEHICLE CAM':'STAFF CAM',dur:rr(9,16),fov:65,u(){cam.position.copy(e.p).addScaledVector(e.dir,-6).add(V(0,2.8+(e.plat?0:0),0));look.copy(e.p).addScaledVector(e.dir,3).add(V(0,1.4,0));cam.lookAt(look);}};},
+ ()=>({n:'PLATFORM CAM',dur:rr(10,16),fov:70,u(){cam.position.copy(wp(0,PY-4.5,4));look.lerp(domeP,.06);cam.lookAt(look);}}),
+ ()=>({n:'DOME CAM',dur:rr(9,14),fov:50,u(){cam.position.copy(domeP).add(V(Math.cos(T*.3)*12,2,Math.sin(T*.3)*12));cam.lookAt(domeP);}}),
+ ()=>{const a0=rr(0,6);return{n:'GROUND CAM',dur:rr(10,16),fov:62,u(){const a=a0+T*.03;cam.position.set(Math.cos(a)*(R+10),2.5,Math.sin(a)*(R+10));look.set(0,PY*.7,0);cam.lookAt(look);}};}];
+const W8=[0,0,0,1,1,1,1,2,2,3,4,5];
+function newShot(){let k;do{k=pickA(W8);}while(k===lastShot);lastShot=k;shot=DIR[k]();shotEnd=T+shot.dur;$('gl').classList.remove('on');void $('gl').offsetWidth;$('gl').classList.add('on');}
+// ================= 2D instruments
+const ch=$('chart'),cx=ch.getContext('2d'),sp=$('spec'),sx=sp.getContext('2d');
+function chart(){const c0=100,Rr=90;cx.clearRect(0,0,200,200);cx.strokeStyle=INKs;cx.fillStyle=INKs;cx.lineWidth=1;cx.globalAlpha=.8;cx.beginPath();cx.arc(c0,c0,Rr,0,7);cx.stroke();
+ const P=w=>{const al=Math.asin(clamp(w.y,-1,1)),az=Math.atan2(w.x,-w.z),r=(1-al/(PI/2))*Rr;return[c0-r*Math.sin(az),c0-r*Math.cos(az),w.y];};
+ cx.font='8px Chakra Petch,sans-serif';cx.textAlign='center';
+ CAT.forEach((k,i)=>{const on=i===oc;cx.globalAlpha=on?1:.55;cx.strokeStyle=on?ACCs:INKs;cx.beginPath();k.polys.forEach(pl=>{let pr=null;pl.forEach(v=>{const p=P(tw(v));if(pr&&pr[2]>0&&p[2]>0){cx.moveTo(pr[0],pr[1]);cx.lineTo(p[0],p[1]);}pr=p;});});cx.stroke();
+  const wc=tw(k.c);if(wc.y>.1){const p=P(wc);cx.fillStyle=on?ACCs:INKs;cx.fillText(k.n,p[0],p[1]);}});
+ cx.globalAlpha=1;cx.strokeStyle=ACCs;const pr=P(dirW);cx.beginPath();cx.arc(pr[0],pr[1],5,0,7);cx.stroke();cx.fillStyle=INKs;cx.fillText('N',c0,9);cx.fillText('S',c0,196);cx.fillText('E',6,c0+3);cx.fillText('W',194,c0+3);}
+const spec=new Float32Array(300);
+function spectrum(){sx.fillStyle=INKs;sx.strokeStyle=INKs;sx.clearRect(0,0,300,36);sx.globalAlpha=1;sx.lineWidth=1;sx.beginPath();
+ const hx=150+70*Math.sin(T*.07)+Math.sin(T*1.3)*2,pul=Math.max(0,1-((beatPh%1)*60/bpm/.15));
+ for(let x=0;x<300;x++){let v=.25+.1*rnd()+(locked?.55:.15)*Math.exp(-(((x-hx)/9)**2))+pul*.25;if(x===((T*37)|0)%300)v+=.5;spec[x]=v;const y=34-clamp(v,0,1)*32;x?sx.lineTo(x,y):sx.moveTo(x,y);}sx.stroke();
+ sx.drawImage(sp,0,37,300,46,0,38,300,46);sx.clearRect(0,37,300,1);for(let x=0;x<300;x++){sx.globalAlpha=clamp(spec[x]*1.1,0,1);sx.fillRect(x,37,1,1);}sx.globalAlpha=1;}
+// ================= LOOP
+function size(){ren.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}addEventListener('resize',size);size();
+const tcol=new THREE.Color(),qv=new THREE.Quaternion(),yv=V(0,1,0);let fc=0,aA=0,aB=0;
+function frame(){requestAnimationFrame(frame);const dt=Math.min(.1,clk.getDelta());T+=dt;th=setSky(T);
+ bpm+=((bpmBase+4*Math.sin(T*.35))-bpm)*Math.min(1,dt*.8);beatPh+=dt*bpm/60;
+ {const shown=Math.round(bpm),red=shown>BPM_LIMIT,st=red?'red':'green',bl=Math.max(0,1-(beatPh%1)*4);
+  $('bp').textContent=shown;
+  if(st!==lampState){lampState=st;$('ts').textContent=red?'RED LIGHT: HOLD':'GREEN LIGHT: GO';$('lr').classList.toggle('on',red);$('lg').classList.toggle('on',!red);log('tempo '+shown+' BPM: '+(red?'red light':'green light'));}
+  $(red?'lr':'lg').style.opacity=.55+.45*bl;$(red?'lg':'lr').style.opacity='';}
+ if(!radio||T>radioEnd||tw(radio.E).y<.935)pickRadio();
+ if(T>ocEnd||tw(CAT[oc].c).y<.2)pickOpt();
+ // dish pointing
+ const rw=tw(radio.E),tz=Math.acos(clamp(rw.y,0,1)),taz=Math.atan2(rw.z,-rw.x),da=((taz-raz+3*PI)%(2*PI)+2*PI)%(2*PI)-PI,dp=Math.min(tz,.38)-rpsi;
+ raz+=clamp(da,-.5*dt,.5*dt);rpsi+=clamp(dp,-.12*dt,.12*dt);locked=Math.abs(da)<.03&&Math.abs(dp)<.02;
+ arm.rotation.y=raz;const sP=Math.sin(rpsi),cP=Math.cos(rpsi);domeP.set(RA*sP*Math.cos(raz),CYc-RA*cP-1.5,-RA*sP*Math.sin(raz));dome.position.copy(domeP);dirW.set(-sP*Math.cos(raz),cP,sP*Math.sin(raz));
+ // life
+ staff.forEach(s=>{s.ph+=dt*6;if(s.pause>0){s.pause-=dt;s.g.arms.forEach((a,j)=>a.rotation.x=-1.2+.2*Math.sin(T*3+j));s.g.legs.forEach(l=>l.rotation.x=0);if(s.pause<=0&&rnd()<.4){s.w=-s.w;s.sp=-s.sp;}}
+  else{if(rnd()<dt*.06)s.pause=rr(3,9);const sw=Math.sin(s.ph);s.g.legs[0].rotation.x=sw*.6;s.g.legs[1].rotation.x=-sw*.6;s.g.arms[0].rotation.x=-sw*.5;s.g.arms[1].rotation.x=sw*.5;
+   if(s.plat){s.f+=s.sp*dt;if(s.f>1){s.f=0;s.e=(s.e+1)%3;}else if(s.f<0){s.f=1;s.e=(s.e+2)%3;}}else s.a+=s.w*dt;}
+  if(s.plat){const A=pv[s.e],B=pv[(s.e+1)%3];s.p.set(A[0]+(B[0]-A[0])*s.f,PY,A[1]+(B[1]-A[1])*s.f);s.dir.set(B[0]-A[0],0,B[1]-A[1]).normalize().multiplyScalar(Math.sign(s.sp||1));}
+  else{const r=R+9+s.off,sg=Math.sign(s.w);s.p.set(Math.cos(s.a)*r,0,Math.sin(s.a)*r);s.dir.set(-Math.sin(s.a)*sg,0,Math.cos(s.a)*sg);}
+  s.g.position.copy(s.p);s.g.rotation.y=Math.atan2(s.dir.x,s.dir.z);});
+ trucks.forEach(t=>{if(t.pause>0)t.pause-=dt;else{t.a+=t.w*dt;if(rnd()<dt*.04)t.pause=rr(2,8);if(rnd()<dt*.01)t.w=-t.w;}const r=R+9.5+t.off,sg=Math.sign(t.w);t.p.set(Math.cos(t.a)*r,0,Math.sin(t.a)*r);t.dir.set(-Math.sin(t.a)*sg,0,Math.cos(t.a)*sg);t.g.position.copy(t.p);t.g.rotation.y=Math.atan2(-t.dir.z,t.dir.x);});
+ drones.forEach((d,i)=>{d.t-=dt;if(d.t<0){d.t=rr(8,20);d.tr=rr(12,120);d.th=rr(10,70);d.tw=rr(.05,.14)*(rnd()<.5?-1:1);}d.r+=(d.tr-d.r)*dt*.25;d.h+=(d.th-d.h)*dt*.25;d.w+=(d.tw-d.w)*dt*.3;d.a+=d.w*dt;
+  d.p.set(Math.cos(d.a)*d.r,d.h+Math.sin(T*.8+i)*1.5,Math.sin(d.a)*d.r);d.g.position.copy(d.p);d.g.rotation.y=-d.a+PI/2*Math.sign(d.w);d.g.rotation.z=.12*Math.sin(T+i);d.g.rot.forEach((r,k)=>r.rotation.y=T*(k%2?30:-30));});
+ flocks.forEach(f=>{f.t-=dt;if(f.t<0){f.t=rr(10,25);f.tr=rr(30,120);f.th=rr(20,65);}f.r+=(f.tr-f.r)*dt*.2;f.h+=(f.th-f.h)*dt*.2;f.a+=f.w*dt;const cx2=Math.cos(f.a)*f.r,cz=Math.sin(f.a)*f.r,sg=Math.sign(f.w);
+  f.bs.forEach(b=>{b.position.set(cx2+b.o.x,f.h+b.o.y+Math.sin(T+b.ph)*.8,cz+b.o.z);b.rotation.y=Math.atan2(-Math.sin(f.a)*sg,Math.cos(f.a)*sg);const w=Math.sin(T*9+b.ph)*.6;b.l.rotation.z=w;b.r.rotation.z=-w;});});
+ gd.forEach(g=>{g.t-=dt;if(g.t<0){g.t=rr(8,20);g.q.setFromUnitVectors(yv,V(rr(-.6,.6),1,rr(-.6,.6)).normalize());}g.p.quaternion.slerp(g.q,dt*.4);});
+ // weather
+ if(T>wx.end){wx={s:pickA(['clear','clear','mist','rain','storm']),end:T+rr(25,70)};tgtRain=wx.s==='rain'?.55:wx.s==='storm'?1:0;log('weather: '+wx.s);}
+ fogN+=((wx.s==='mist'||wx.s==='storm'?10:90)-fogN)*dt*.4;fogF+=((wx.s==='mist'?110:wx.s==='storm'?170:320)-fogF)*dt*.4;sc.fog.near=fogN;sc.fog.far=fogF;rainAmt+=(tgtRain-rainAmt)*dt*.5;
+ rainG.setDrawRange(0,Math.floor(rainAmt*RN*2));const ra=rainG.attributes.position.array;for(let i=0;i<RN;i++){const k=i*6;ra[k+1]-=dt*45;ra[k+4]-=dt*45;if(ra[k+1]<-25){ra[k+1]=25;ra[k+4]=22.8;}}rainG.attributes.position.needsUpdate=true;
+ if(wx.s==='storm'&&T>nextBolt){nextBolt=T+rr(2.5,9);boltT=.18;flash=1;const bx=rr(-110,110),bz=rr(-110,110),a=bolt.geometry.attributes.position.array;for(let i=0;i<15;i++){const f=i/14;a[i*3]=bx+(i&&i<14?rr(-6,6):0);a[i*3+1]=170*(1-f)+Hh(bx,bz)*f;a[i*3+2]=bz+(i&&i<14?rr(-6,6):0);}bolt.geometry.attributes.position.needsUpdate=true;}
+ boltT-=dt;bolt.visible=boltT>0;flash=Math.max(0,flash-dt*3);
+ tcol.copy(BG).lerp(ACC,flash*.35);ren.setClearColor(tcol);sc.fog.color.copy(tcol);
+ // meteors
+ mets.forEach(m=>{m.t+=dt;if(m.t>m.d){m.l.visible=false;if(rnd()<dt*(.25+.2*Math.sin(T*.05)))m.t=0,m.d=rr(.6,1.2),m.P.set(rr(-1,1),rr(.2,1),rr(-1,1)).normalize(),m.D.set(rr(-1,1),rr(-.6,0),rr(-1,1)).normalize().multiplyScalar(.9),log('meteor streak recorded');}
+  else{m.l.visible=true;const a=m.l.geometry.attributes.position.array,h=_v.copy(m.P).addScaledVector(m.D,m.t).normalize().multiplyScalar(280),t2=V().copy(m.P).addScaledVector(m.D,Math.max(0,m.t-.15)).normalize().multiplyScalar(280);a.set([h.x,h.y,h.z,t2.x,t2.y,t2.z]);m.l.geometry.attributes.position.needsUpdate=true;m.l.material.opacity=1-m.t/m.d;}});
+ if(sat.f<-1.5){sat.wait-=dt;satP.visible=false;if(sat.wait<0){sat.a.set(rr(-1,1),rr(.3,1),rr(-1,1)).normalize();sat.b.set(rr(-1,1),rr(-1,1),rr(-1,1)).cross(sat.a).normalize();sat.f=-1.5;sat.s=rr(.05,.09);sat.wait=rr(12,30);log('satellite pass tracked');sat.run=true;}}
+ if(sat.run){sat.f+=sat.s*dt;const p=V().copy(sat.a).multiplyScalar(Math.cos(sat.f)).addScaledVector(sat.b,Math.sin(sat.f)).multiplyScalar(280);satP.visible=p.y>8;satP.position.copy(p);if(sat.f>1.5){sat.run=false;sat.f=-9;satP.visible=false;}}
+ // events
+ if(T>nextEv){nextEv=T+rr(3,8);log(`[LST ${((th*12/PI)%24).toFixed(1)}h] `+pickA(EV)());}
+ // highlight constellations
+ cMat.forEach((m,i)=>{const on=i===oc;m.opacity+=((on?1:.3)-m.opacity)*.1;m.color.copy(INK).lerp(ACC,on?1:0);cLab[i].material.opacity+=((on?1:.3)-cLab[i].material.opacity)*.1;cLab[i].material.color.copy(INK).lerp(ACC,on?1:0);});
+ // main view
+ if(!shot||T>shotEnd)newShot();
+ cam.fov+=(shot.fov-cam.fov)*.05;cam.updateProjectionMatrix();shot.u(dt);rain.position.copy(cam.position);
+ const W=innerWidth,Hs=innerHeight;ren.setScissorTest(false);ren.setViewport(0,0,W,Hs);ren.render(sc,cam);
+ // telescope view
+ const wc=tw(CAT[oc].c).clone();tl.lerp(wc,.04).normalize();tcam.position.copy(domeP).add(V(0,2.5,0));tcam.lookAt(tcam.position.clone().addScaledVector(tl,300));
+ tcam.fov+=(clamp(CAT[oc].rad*2.6*180/PI,12,70)-tcam.fov)*.04;const b=$('pip').getBoundingClientRect();tcam.aspect=b.width/b.height;tcam.updateProjectionMatrix();
+ ren.setScissorTest(true);ren.setViewport(b.left,Hs-b.bottom,b.width,b.height);ren.setScissor(b.left,Hs-b.bottom,b.width,b.height);ren.render(sc,tcam);ren.setScissorTest(false);
+ chart();spectrum();
+ if(fc++%6===0){const e=radio.E,ra2=Math.atan2(e.y,e.x),rh=((ra2<0?ra2+2*PI:ra2)*12/PI),rd=Math.asin(e.z)*180/PI;
+  $('hud').innerHTML=`<b>CAM</b> ${shot.n}  ${new Date().toLocaleTimeString()}<br><b>WEATHER</b> ${wx.s}<br><b>LST</b> ${((th*12/PI)%24).toFixed(2)} h<br><b>RADIO DISH</b> ${locked?'LOCKED':'SLEWING'} on ${CAT[radio.ci].n}<br>RA ${rh.toFixed(2)} h, Dec ${rd.toFixed(1)}°, zenith ${(rpsi*180/PI).toFixed(1)}°<br><b>OPTICAL</b> ${CAT[oc].n}, FOV ${tcam.fov.toFixed(0)}°`;
+  $('pl').textContent='TELESCOPE: '+CAT[oc].n;}
+}
+log('observatory online');frame();
+</script>
+</body>
+</html>
